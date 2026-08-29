@@ -271,6 +271,11 @@ class AgentIntegrationTest(unittest.TestCase):
                 "retrieve_products",
                 return_value=candidates,
             ),
+            mock.patch.object(
+                self.agent.retriever,
+                "retrieve_strict_products",
+                return_value=[],
+            ),
             mock.patch("starter.agent.rank_products", side_effect=RuntimeError("rank failed")),
         ):
             response = self.agent.respond(

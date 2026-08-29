@@ -194,6 +194,17 @@ class Agent:
         if not isinstance(candidates, list):
             return []
 
+        try:
+            strict_candidates = self.retriever.retrieve_strict_products(
+                category=decision["category"],
+                active_constraints=decision["active_constraints"],
+                top_k=min(200, self.candidate_pool_size),
+            )
+        except Exception:
+            strict_candidates = []
+        if isinstance(strict_candidates, list):
+            candidates = [*candidates, *strict_candidates]
+
         if self.candidate_cache_size:
             self._candidate_cache[signature] = candidates
             self._candidate_cache.move_to_end(signature)

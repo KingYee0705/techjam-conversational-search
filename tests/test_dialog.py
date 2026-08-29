@@ -93,6 +93,71 @@ class DialogStateManagerTest(unittest.TestCase):
             second["active_constraints"]["feature"], ["Machine washable, please"]
         )
 
+    def test_multiple_same_attribute_details_trigger_one_bounded_follow_up(self) -> None:
+        manager = DialogStateManager(broad_question_limit=0)
+        manager.reset("specific", PROFILE)
+        first = manager.process_turn(
+            "specific", "I'm looking for jackets, but I'm still exploring.", 1
+        )
+        second = manager.process_turn(
+            "specific",
+            "For that, what matters is: waterproof; zippered pockets.",
+            2,
+        )
+        third = manager.process_turn(
+            "specific",
+            "For that, what matters is: detachable hood; reflective trim.",
+            3,
+        )
+
+        self.assertEqual(first["ask_attribute"], "feature")
+        self.assertEqual(second["ask_attribute"], "feature")
+        self.assertNotEqual(third["ask_attribute"], "feature")
+        self.assertEqual(
+            manager.get_state("specific")["asked_attributes"].count("feature"),
+            2,
+        )
+
+    def test_mixed_attribute_details_do_not_repeat_the_question(self) -> None:
+        manager = DialogStateManager(broad_question_limit=0)
+        manager.reset("mixed", PROFILE)
+        manager.process_turn(
+            "mixed", "I'm looking for jackets, but I'm still exploring.", 1
+        )
+        decision = manager.process_turn(
+            "mixed",
+            "For that, what matters is: cotton; waterproof.",
+            2,
+        )
+
+        self.assertNotEqual(decision["ask_attribute"], "feature")
+
+    def test_declined_attribute_does_not_repeat_the_question(self) -> None:
+        manager = DialogStateManager(broad_question_limit=0)
+        manager.reset("declined", PROFILE)
+        manager.process_turn(
+            "declined", "I'm looking for jackets, but I'm still exploring.", 1
+        )
+        decision = manager.process_turn(
+            "declined", "I don't have an additional preference for feature.", 2
+        )
+
+        self.assertNotEqual(decision["ask_attribute"], "feature")
+
+    def test_same_attribute_follow_up_never_overrides_turn_ten_boundary(self) -> None:
+        manager = DialogStateManager(broad_question_limit=0)
+        manager.reset("final", PROFILE)
+        manager.process_turn(
+            "final", "I'm looking for jackets, but I'm still exploring.", 1
+        )
+        decision = manager.process_turn(
+            "final",
+            "For that, what matters is: waterproof; zippered pockets.",
+            10,
+        )
+
+        self.assertIsNone(decision["ask_attribute"])
+
     def test_boundary_reply_is_not_stored_as_a_constraint(self) -> None:
         self.manager.process_turn(
             "session", "I'm looking for handbags, but I'm still exploring.", 1

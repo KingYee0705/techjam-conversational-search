@@ -48,6 +48,21 @@ MAX_BUDGET_PATTERNS = (
     ),
 )
 
+# Product features frequently contain phrases such as "up to 8-inch wrist"
+# or "up to 100-hour chronograph".  Those are measurements, not prices, but
+# the maximum-budget patterns intentionally accept amounts without a currency
+# symbol (for example, "under 50").  Remove explicit measurements before
+# looking for a budget so those feature descriptions cannot become accidental
+# hard price limits.  Currency-prefixed quantities remain untouched.
+NON_BUDGET_QUANTITY_RE = re.compile(
+    r"(?<![$£€\w])\d+(?:\.\d+)?\s*(?:-\s*)?"
+    r"(?:inch(?:es)?|in|feet|foot|ft|millimeters?|mm|centimeters?|cm|meters?|"
+    r"hours?|hrs?|minutes?|mins?|seconds?|days?|weeks?|months?|years?|"
+    r"ounces?|oz|pounds?|lbs?|grams?|kilograms?|kg|percent|%)"
+    r"(?![a-z0-9])",
+    re.IGNORECASE,
+)
+
 
 def _text(value: object) -> str:
     if value is None:
@@ -175,7 +190,7 @@ def _budget_text(active_constraints: object, user_message: str) -> str:
 
 
 def _maximum_budget(active_constraints: object, user_message: str) -> float | None:
-    text = _budget_text(active_constraints, user_message)
+    text = NON_BUDGET_QUANTITY_RE.sub(" ", _budget_text(active_constraints, user_message))
     matches: list[float] = []
     for pattern in MAX_BUDGET_PATTERNS:
         for match in pattern.finditer(text):

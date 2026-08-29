@@ -587,6 +587,30 @@ class DialogStateManager:
             state["pending_attribute"] = None
             return "Based on everything you've told me, here are my top recommendations.", None
 
+        # When a customer supplies multiple details for the requested field,
+        # one bounded follow-up can reveal the rest of that same preference
+        # cluster.  Mixed answers, declines, broad ``other`` questions, and
+        # already-repeated attributes continue through the normal strategy.
+        if state["asked_attributes"]:
+            prior_attribute = state["asked_attributes"][-1]
+            fresh_confirmed = [
+                record
+                for record in state["records"]
+                if record["turn"] == turn and record["source"] == "confirmed"
+            ]
+            if (
+                prior_attribute not in {"other", "category"}
+                and len(fresh_confirmed) >= 2
+                and all(record["attribute"] == prior_attribute for record in fresh_confirmed)
+                and state["asked_attributes"].count(prior_attribute) < 2
+            ):
+                label = prior_attribute.replace("_", " ")
+                return self._record_question(
+                    state,
+                    prior_attribute,
+                    f"Is there one more {label} detail I should prioritize?",
+                )
+
         if not state["category"] and "category" not in state["declined_attributes"]:
             return self._record_question(state, "category", QUESTION_TEXT["category"])
 

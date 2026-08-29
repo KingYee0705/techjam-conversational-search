@@ -111,6 +111,51 @@ class RankingTest(unittest.TestCase):
         self.assertNotIn("OVER", [item["parent_asin"] for item in ranked])
         self.assertEqual(len(ranked), 10)
 
+    def test_product_measurements_are_not_treated_as_a_budget(self) -> None:
+        exact = candidate(
+            "EXACT",
+            "Gold chronograph watch",
+            retrieval_score=1.0,
+            price=80.0,
+            features=["Band fits up to 8-inch wrists", "Up to 100-hour chronograph"],
+        )
+        cheap = candidate(
+            "CHEAP",
+            "Basic watch",
+            retrieval_score=0.1,
+            price=5.0,
+        )
+
+        ranked = rank_products(
+            [cheap, exact],
+            "gold chronograph watch with a band up to 8-inch wrists and up to 100-hour timing",
+            {"feature": ["band fits up to 8-inch wrists"]},
+            {},
+            top_k=2,
+        )
+
+        self.assertEqual(ranked[0]["parent_asin"], "EXACT")
+
+    def test_real_budget_still_applies_alongside_measurements(self) -> None:
+        within = candidate("WITHIN", "Basic watch", retrieval_score=0.1, price=40.0)
+        over = candidate(
+            "OVER",
+            "Gold chronograph watch",
+            retrieval_score=1.0,
+            price=80.0,
+            features=["Band fits up to 8-inch wrists"],
+        )
+
+        ranked = rank_products(
+            [over, within],
+            "gold watch with a band up to 8-inch wrists under $50",
+            {"feature": ["band fits up to 8-inch wrists"], "budget": ["under $50"]},
+            {},
+            top_k=2,
+        )
+
+        self.assertEqual(ranked[0]["parent_asin"], "WITHIN")
+
     def test_retrieval_score_wins_when_other_evidence_is_equal(self) -> None:
         low = candidate("LOW", "Black socks", retrieval_score=0.2)
         high = candidate("HIGH", "Black socks", retrieval_score=0.9)
