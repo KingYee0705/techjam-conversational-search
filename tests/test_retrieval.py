@@ -6,7 +6,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from starter.retrieval import CatalogRetriever, _expanded_terms, _route_scores
+from starter.retrieval import (
+    CatalogRetriever,
+    STRICT_SCORE_FLOOR,
+    _expanded_terms,
+    _route_scores,
+    _strict_fts_expression,
+)
 
 
 PRODUCTS = [
@@ -164,6 +170,45 @@ class RetrievalTest(unittest.TestCase):
             item["route_hits"] for item in results if item["parent_asin"] == "BOOT-LEATHER"
         ))
 
+    def test_strict_expression_ands_concepts_and_strips_labels(self) -> None:
+        expression = _strict_fts_expression(
+            "Running Shoes",
+            {"color": ["color: blue"], "budget": ["under $10"]},
+        )
+
+        self.assertIn(" AND ", expression)
+        self.assertIn('"blue"', expression)
+        self.assertIn('"shoe"', expression)
+        self.assertIn(" OR ", expression)
+        self.assertNotIn('"color"', expression)
+        self.assertNotIn('"10"', expression)
+
+    def test_strict_route_requires_every_disclosed_concept(self) -> None:
+        results = self.retriever.retrieve_strict_products(
+            category="Running Shoes",
+            active_constraints={"color": ["color: blue"], "feature": ["mesh"]},
+            top_k=6,
+        )
+
+        self.assertEqual([item["parent_asin"] for item in results], ["RUN-BLUE"])
+        self.assertEqual(
+            results[0]["route_hits"],
+            ["current_message", "active_constraints"],
+        )
+        self.assertGreaterEqual(results[0]["retrieval_score"], STRICT_SCORE_FLOOR)
+
+    def test_strict_route_is_bounded_and_safe_when_empty(self) -> None:
+        first = self.retriever.retrieve_strict_products(category="Shoes", top_k=1)
+        second = self.retriever.retrieve_strict_products(category="Shoes", top_k=1)
+
+        self.assertEqual(first, second)
+        self.assertEqual(len(first), 1)
+        self.assertEqual(self.retriever.retrieve_strict_products(top_k=6), [])
+        self.assertEqual(
+            self.retriever.retrieve_strict_products(category="Shoes", top_k=0),
+            [],
+        )
+
     def test_empty_query_and_invalid_limit_are_safe(self) -> None:
         self.assertEqual(self.retriever.retrieve_products("the and please"), [])
         self.assertEqual(self.retriever.retrieve_products("running", top_k=0), [])
@@ -190,8 +235,18 @@ class RetrievalTest(unittest.TestCase):
         self.assertEqual(profile, original_profile)
 
     def test_output_is_deterministic_and_respects_top_k(self) -> None:
-        first = self.retriever.retrieve_products("shoes", top_k=2)
-        second = self.retriever.retrieve_products("shoes", top_k=2)
+        first = self.retriever.retrieve_products(
+            "shoes",
+            active_constraints={"color": ["blue"]},
+            category="Shoes",
+            top_k=2,
+        )
+        second = self.retriever.retrieve_products(
+            "shoes",
+            active_constraints={"color": ["blue"]},
+            category="Shoes",
+            top_k=2,
+        )
 
         self.assertEqual(first, second)
         self.assertEqual(len(first), 2)

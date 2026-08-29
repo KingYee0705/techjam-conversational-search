@@ -21,6 +21,7 @@ ROUTE_WEIGHTS = {
     "profile": 0.25,
 }
 ROUTE_ORDER = tuple(ROUTE_WEIGHTS)
+STRICT_SCORE_FLOOR = 0.60
 
 SYNONYM_GROUPS = (
     {"shoe", "shoes", "sneaker", "sneakers", "footwear"},
@@ -36,6 +37,10 @@ SYNONYMS = {
     for group in SYNONYM_GROUPS
     for term in group
 }
+STRICT_LABEL_RE = re.compile(
+    r"^\s*(?:color|material|feature|style|size|brand|use[_ -]?case)\s*:\s*",
+    re.IGNORECASE,
+)
 
 
 def _text(value: object) -> str:
@@ -90,6 +95,38 @@ def _expanded_terms(value: object, limit: int = 60) -> list[str]:
 
 def _fts_expression(value: object) -> str:
     return " OR ".join(f'"{term}"' for term in _expanded_terms(value))
+
+
+def _strict_fts_expression(category: object, active_constraints: object) -> str:
+    """Build a high-precision query while retaining inflection alternatives.
+
+    Broad retrieval uses OR across every query token, which is useful when a
+    customer's wording differs from incomplete catalog text.  Once category or
+    constraint evidence is available, this companion expression requires every
+    disclosed concept while still allowing synonyms and singular/plural forms.
+    """
+
+    values: list[str] = []
+    if category is not None and str(category).strip():
+        values.append(str(category).strip())
+    if isinstance(active_constraints, dict):
+        for attribute, items in active_constraints.items():
+            if str(attribute).strip().lower() in {"category", "budget"}:
+                continue
+            if isinstance(items, (str, int, float)):
+                items = [items]
+            if not isinstance(items, Iterable) or isinstance(items, dict):
+                continue
+            for item in items:
+                cleaned = STRICT_LABEL_RE.sub("", str(item)).strip()
+                if cleaned:
+                    values.append(cleaned)
+
+    groups: list[str] = []
+    for term in dict.fromkeys(_base_terms(values)):
+        variants = dict.fromkeys((term, *_inflections(term), *SYNONYMS.get(term, ())))
+        groups.append("(" + " OR ".join(f'\"{variant}\"' for variant in variants) + ")")
+    return " AND ".join(groups)
 
 
 def _constraint_query(active_constraints: object) -> str:
@@ -197,6 +234,11 @@ class CatalogRetriever:
         expression = _fts_expression(query)
         if not expression or limit <= 0:
             return []
+        return self._search_expression(expression, limit)
+
+    def _search_expression(self, expression: str, limit: int) -> list[tuple[str, dict, float]]:
+        if not expression or limit <= 0:
+            return []
         rows = self.connection.execute(
             "SELECT parent_asin, product_json, "
             "bm25(products, 0.0, 0.0, 6.0, 4.0, 2.5, 2.5, 1.5, 1.0) AS score "
@@ -281,6 +323,50 @@ class CatalogRetriever:
             key=lambda candidate: (-candidate["retrieval_score"], candidate["parent_asin"]),
         )
         return ordered[:limit]
+
+    def retrieve_strict_products(
+        self,
+        *,
+        category: str | None = None,
+        active_constraints: dict[str, list[str]] | None = None,
+        top_k: int = 200,
+    ) -> list[dict]:
+        """Return products satisfying every disclosed searchable concept.
+
+        This bounded precision route is kept separate from broad retrieval so
+        both methods respect their own ``top_k`` contract.  The agent unions
+        the two pools before reranking; an empty over-constrained result cannot
+        remove broad candidates.
+        """
+
+        try:
+            limit = max(0, int(top_k))
+        except (TypeError, ValueError):
+            return []
+        if limit == 0:
+            return []
+
+        strict_expression = _strict_fts_expression(category, active_constraints or {})
+        if not strict_expression:
+            return []
+        try:
+            strict_results = self._search_expression(strict_expression, limit)
+        except sqlite3.OperationalError:
+            return []
+        return [
+            {
+                "parent_asin": parent_asin,
+                "product": product,
+                # A product satisfying every disclosed concept deserves enough
+                # evidence to reach the downstream reranker even when it sits
+                # deep among many generic OR matches.  The conservative floor
+                # was chosen below the strongest route score and broad search
+                # remains available alongside it.
+                "retrieval_score": max(STRICT_SCORE_FLOOR, strict_score),
+                "route_hits": ["current_message", "active_constraints"],
+            }
+            for parent_asin, product, strict_score in strict_results
+        ]
 
     def close(self) -> None:
         self.connection.close()
