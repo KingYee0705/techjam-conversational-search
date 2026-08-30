@@ -9,6 +9,34 @@ from pathlib import Path
 
 
 TOKEN_RE = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+SIZE_VALUE_PATTERN = r"(?<![a-z0-9])(?:\d+(?:\.\d+)?|xxxl|xxl|xxs|xl|xs|s|m|l)(?![a-z0-9])"
+SIZE_VALUE_RE = re.compile(
+    SIZE_VALUE_PATTERN,
+    re.IGNORECASE,
+)
+SIZE_CONTEXT_RE = re.compile(
+    r"\bsizes?\b(?:\s+(?:chart|available|offered|include(?:s)?|are|is))?"
+    r"\s*(?::|=|-)?\s*"
+    rf"(?P<values>(?:(?:us|uk|eu)\s+)?{SIZE_VALUE_PATTERN}"
+    rf"(?:\s*(?:[,/|&]|[-–]|\band\b|\bor\b)\s*"
+    rf"(?:(?:us|uk|eu)\s+)?{SIZE_VALUE_PATTERN})*)",
+    re.IGNORECASE,
+)
+SIZE_MEASUREMENT_RE = re.compile(
+    r"^\s*\d+(?:\.\d+)?\s*(?:"
+    r"['’′]\s*\d+(?:\.\d+)?\s*(?:[\"”″]|inches?)?|"
+    r"[x×]\s*\d+(?:\.\d+)?|"
+    r"[\"”″]|inches?\b|in\b|feet\b|foot\b|ft\b|"
+    r"millimeters?\b|mm\b|centimeters?\b|cm\b|meters?\b)",
+    re.IGNORECASE,
+)
+SIZE_DIMENSION_RE = re.compile(
+    r"(?<![a-z0-9])\d+(?:\.\d+)?"
+    r"(?:\s*[x×]\s*\d+(?:\.\d+)?){1,}"
+    r"(?:\s*[-–]?\s*(?:[\"”″]|inches?\b|in\b|feet\b|foot\b|ft\b|"
+    r"millimeters?\b|mm\b|centimeters?\b|cm\b|meters?\b))?",
+    re.IGNORECASE,
+)
 STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from",
     "i", "in", "is", "it", "me", "my", "of", "on", "or", "please", "some",
@@ -63,6 +91,121 @@ def _base_terms(value: object) -> list[str]:
     ]
 
 
+def _scalar_texts(value: object) -> Iterable[str]:
+    if value is None:
+        return
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _scalar_texts(item)
+        return
+    if isinstance(value, (list, tuple, set)):
+        items = sorted(value, key=str) if isinstance(value, set) else value
+        for item in items:
+            yield from _scalar_texts(item)
+        return
+    yield str(value)
+
+
+def _size_search_term(value: str) -> str:
+    normalized = value.lower().strip().replace(".", "p")
+    return "zzsize" + re.sub(r"[^a-z0-9]+", "", normalized)
+
+
+def _without_dimensions(text: str) -> str:
+    """Mask dimensions while preserving offsets for later context checks."""
+
+    return SIZE_DIMENSION_RE.sub(
+        lambda match: " " * len(match.group(0)),
+        text,
+    )
+
+
+def _contextual_size_terms(value: object) -> list[str]:
+    terms: list[str] = []
+    for text in _scalar_texts(value):
+        size_text = _without_dimensions(text)
+        for context in SIZE_CONTEXT_RE.finditer(size_text):
+            for match in SIZE_VALUE_RE.finditer(context.group("values")):
+                start = context.start("values") + match.start()
+                if SIZE_MEASUREMENT_RE.match(size_text[start:]):
+                    continue
+                terms.append(_size_search_term(match.group(0)))
+    return list(dict.fromkeys(terms))
+
+
+def _structured_size_terms(details: object) -> list[str]:
+    if not isinstance(details, dict):
+        return []
+    terms: list[str] = []
+    for key, value in details.items():
+        if str(key).strip().lower() != "size":
+            continue
+        for text in _scalar_texts(value):
+            size_text = _without_dimensions(text)
+            for match in SIZE_VALUE_RE.finditer(size_text):
+                if SIZE_MEASUREMENT_RE.match(size_text[match.start():]):
+                    continue
+                terms.append(_size_search_term(match.group(0)))
+    return list(dict.fromkeys(terms))
+
+
+def _product_size_terms(product: dict) -> list[str]:
+    terms = _structured_size_terms(product.get("details"))
+    for field in ("title", "features", "description"):
+        terms.extend(_contextual_size_terms(product.get(field)))
+    return list(dict.fromkeys(terms))
+
+
+def _attribute_terms(attribute: object, value: object) -> list[tuple[str, bool]]:
+    """Return search terms and whether each term must remain literal.
+
+    One-character tokens are deliberately ignored by the general tokenizer,
+    but values such as ``S``, ``M``, ``L``, ``8``, and ``8.5`` are meaningful
+    when they come from the structured ``size`` attribute.  Masking those
+    values before the ordinary token pass also keeps a decimal size together
+    instead of weakening ``8.5`` into unrelated ``8`` and ``5`` terms.
+    """
+
+    text = _text(value)
+    if str(attribute).strip().lower() != "size":
+        return [(term, False) for term in _base_terms(text)]
+
+    literal_terms: list[str] = []
+    masked = list(text)
+    for match in SIZE_VALUE_RE.finditer(text):
+        literal_terms.append(_size_search_term(match.group(0)))
+        for index in range(match.start(), match.end()):
+            masked[index] = " "
+
+    ordinary_terms = _base_terms("".join(masked))
+    return [
+        *((term, False) for term in ordinary_terms),
+        *((term, True) for term in literal_terms),
+    ]
+
+
+def _term_variants(term: str, literal: bool = False) -> tuple[str, ...]:
+    if literal:
+        return (term,)
+    return tuple(dict.fromkeys((term, *_inflections(term), *SYNONYMS.get(term, ()))))
+
+
+def _expanded_attribute_terms(
+    terms: Iterable[tuple[str, bool]],
+    limit: int = 60,
+) -> list[str]:
+    expanded: list[str] = []
+    seen: set[str] = set()
+    for term, literal in terms:
+        for candidate in _term_variants(term, literal):
+            if candidate not in seen:
+                expanded.append(candidate)
+                seen.add(candidate)
+                if len(expanded) >= limit:
+                    return expanded
+    return expanded
+
+
 def _inflections(term: str) -> tuple[str, ...]:
     variants: set[str] = set()
     if len(term) > 3 and term.endswith("ies"):
@@ -97,6 +240,30 @@ def _fts_expression(value: object) -> str:
     return " OR ".join(f'"{term}"' for term in _expanded_terms(value))
 
 
+def _constraint_fts_expression(active_constraints: object) -> str:
+    """Build the broad constraint route with attribute-aware size terms."""
+
+    if not isinstance(active_constraints, dict):
+        return ""
+    terms: list[tuple[str, bool]] = []
+    for attribute, items in active_constraints.items():
+        if str(attribute).strip().lower() == "budget":
+            continue
+        if isinstance(items, (str, int, float)):
+            items = [items]
+        if not isinstance(items, Iterable) or isinstance(items, dict):
+            continue
+        rendered = [item for item in items if str(item).strip()]
+        if not rendered:
+            continue
+        terms.extend((term, False) for term in _base_terms(attribute))
+        for item in rendered:
+            terms.extend(_attribute_terms(attribute, item))
+    return " OR ".join(
+        f'"{term}"' for term in _expanded_attribute_terms(terms)
+    )
+
+
 def _strict_fts_expression(category: object, active_constraints: object) -> str:
     """Build a high-precision query while retaining inflection alternatives.
 
@@ -106,9 +273,9 @@ def _strict_fts_expression(category: object, active_constraints: object) -> str:
     disclosed concept while still allowing synonyms and singular/plural forms.
     """
 
-    values: list[str] = []
+    terms: list[tuple[str, bool]] = []
     if category is not None and str(category).strip():
-        values.append(str(category).strip())
+        terms.extend((term, False) for term in _base_terms(category))
     if isinstance(active_constraints, dict):
         for attribute, items in active_constraints.items():
             if str(attribute).strip().lower() in {"category", "budget"}:
@@ -120,11 +287,16 @@ def _strict_fts_expression(category: object, active_constraints: object) -> str:
             for item in items:
                 cleaned = STRICT_LABEL_RE.sub("", str(item)).strip()
                 if cleaned:
-                    values.append(cleaned)
+                    terms.extend(_attribute_terms(attribute, cleaned))
 
     groups: list[str] = []
-    for term in dict.fromkeys(_base_terms(values)):
-        variants = dict.fromkeys((term, *_inflections(term), *SYNONYMS.get(term, ())))
+    unique_terms: dict[str, bool] = {}
+    for term, literal in terms:
+        # Literal size evidence wins if a duplicate was previously discovered
+        # through ordinary text tokenization.
+        unique_terms[term] = unique_terms.get(term, False) or literal
+    for term, literal in unique_terms.items():
+        variants = _term_variants(term, literal)
         groups.append("(" + " OR ".join(f'\"{variant}\"' for variant in variants) + ")")
     return " AND ".join(groups)
 
@@ -196,21 +368,38 @@ class CatalogRetriever:
     def __init__(self, catalog_path: str | Path = "data/catalog.jsonl") -> None:
         self.catalog_path = Path(catalog_path)
         self.connection = sqlite3.connect(":memory:")
-        self._build_index()
+        try:
+            self._build_index()
+        except Exception:
+            self.connection.close()
+            raise
 
     def _build_index(self) -> None:
         cursor = self.connection.cursor()
-        cursor.execute(
-            "CREATE VIRTUAL TABLE products USING fts5("
-            "parent_asin UNINDEXED, product_json UNINDEXED, title, categories, features, "
-            "details, store, description, tokenize='unicode61 remove_diacritics 2')"
-        )
+        try:
+            cursor.execute(
+                "CREATE VIRTUAL TABLE products USING fts5("
+                "parent_asin UNINDEXED, product_json UNINDEXED, title, categories, features, "
+                "details, store, description, tokenize='unicode61 remove_diacritics 2')"
+            )
+        except sqlite3.OperationalError as error:
+            if "fts5" in str(error).lower():
+                raise RuntimeError(
+                    "This agent requires a Python SQLite build with FTS5 enabled."
+                ) from error
+            raise
         batch: list[tuple[str, str, str, str, str, str, str, str]] = []
         with self.catalog_path.open(encoding="utf-8") as handle:
             for line in handle:
                 if not line.strip():
                     continue
                 product = json.loads(line)
+                size_terms = " ".join(_product_size_terms(product))
+                details_text = " ".join(
+                    value
+                    for value in (_text(product.get("details")), size_terms)
+                    if value
+                )
                 batch.append(
                     (
                         str(product["parent_asin"]),
@@ -218,7 +407,7 @@ class CatalogRetriever:
                         _text(product.get("title")),
                         _text(product.get("categories")),
                         _text(product.get("features")),
-                        _text(product.get("details")),
+                        details_text,
                         _text(product.get("store")),
                         _text(product.get("description")),
                     )
@@ -276,13 +465,13 @@ class CatalogRetriever:
 
         constraints = active_constraints or {}
         profile = user_profile or {}
-        route_queries = {
-            "current_message": query,
-            "active_constraints": _constraint_query(constraints),
-            "category": _category_query(category, constraints),
-            "profile": _profile_query(profile),
+        route_expressions = {
+            "current_message": _fts_expression(query),
+            "active_constraints": _constraint_fts_expression(constraints),
+            "category": _fts_expression(_category_query(category, constraints)),
+            "profile": _fts_expression(_profile_query(profile)),
         }
-        active_routes = [route for route in ROUTE_ORDER if _fts_expression(route_queries[route])]
+        active_routes = [route for route in ROUTE_ORDER if route_expressions[route]]
         if not active_routes:
             return []
 
@@ -292,7 +481,9 @@ class CatalogRetriever:
         score_parts: dict[str, float] = {}
 
         for route in active_routes:
-            for parent_asin, product, score in self._search_route(route_queries[route], route_limit):
+            for parent_asin, product, score in self._search_expression(
+                route_expressions[route], route_limit
+            ):
                 if parent_asin not in merged:
                     merged[parent_asin] = {
                         "parent_asin": parent_asin,
@@ -349,6 +540,11 @@ class CatalogRetriever:
         strict_expression = _strict_fts_expression(category, active_constraints or {})
         if not strict_expression:
             return []
+        route_hits: list[str] = []
+        if category is not None and str(category).strip():
+            route_hits.append("category")
+        if _strict_fts_expression(None, active_constraints or {}):
+            route_hits.append("active_constraints")
         try:
             strict_results = self._search_expression(strict_expression, limit)
         except sqlite3.OperationalError:
@@ -363,7 +559,9 @@ class CatalogRetriever:
                 # was chosen below the strongest route score and broad search
                 # remains available alongside it.
                 "retrieval_score": max(STRICT_SCORE_FLOOR, strict_score),
-                "route_hits": ["current_message", "active_constraints"],
+                # This route never searches the raw current message. Report
+                # only the structured evidence that actually formed the query.
+                "route_hits": list(route_hits),
             }
             for parent_asin, product, strict_score in strict_results
         ]

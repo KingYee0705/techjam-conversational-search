@@ -9,8 +9,12 @@ from pathlib import Path
 from starter.retrieval import (
     CatalogRetriever,
     STRICT_SCORE_FLOOR,
+    _constraint_fts_expression,
     _expanded_terms,
+    _fts_expression,
+    _product_size_terms,
     _route_scores,
+    _size_search_term,
     _strict_fts_expression,
 )
 
@@ -87,6 +91,90 @@ PRODUCTS = [
         "average_rating": 0.0,
         "rating_number": 0,
         "store": "",
+    },
+    {
+        "parent_asin": "SIZE-LETTERS",
+        "title": "Classic fitted shirt",
+        "features": ["Available in S M L"],
+        "description": [],
+        "price": 20.0,
+        "categories": ["Men", "Clothing", "Shirts"],
+        "details": {"Size": "S M L"},
+        "average_rating": 4.0,
+        "rating_number": 10,
+        "store": "Sizing Test",
+    },
+    {
+        "parent_asin": "SIZE-8",
+        "title": "Numeric size walking shoe",
+        "features": ["US size 8"],
+        "description": [],
+        "price": 30.0,
+        "categories": ["Men", "Shoes", "Walking"],
+        "details": {"Size": "8"},
+        "average_rating": 4.0,
+        "rating_number": 10,
+        "store": "Sizing Test",
+    },
+    {
+        "parent_asin": "SIZE-85",
+        "title": "Half size walking shoe",
+        "features": ["US size 8.5"],
+        "description": [],
+        "price": 30.0,
+        "categories": ["Men", "Shoes", "Walking"],
+        "details": {"Size": "8.5"},
+        "average_rating": 4.0,
+        "rating_number": 10,
+        "store": "Sizing Test",
+    },
+    {
+        "parent_asin": "FALSE-SIZE-85",
+        "title": "Walking shoe model information",
+        "features": ["Model wears size S and is 5'8.5\" tall"],
+        "description": [],
+        "price": 30.0,
+        "categories": ["Men", "Shoes", "Walking"],
+        "details": {"Model Size": "5'8.5\""},
+        "average_rating": 4.0,
+        "rating_number": 10,
+        "store": "Sizing Test",
+    },
+    {
+        "parent_asin": "SIZE-CHART",
+        "title": "Chart-only fitted tunic",
+        "features": ["Size chart: S / M / L"],
+        "description": [],
+        "price": 24.0,
+        "categories": ["Women", "Clothing", "Tunics"],
+        "details": {},
+        "average_rating": 4.0,
+        "rating_number": 10,
+        "store": "Sizing Test",
+    },
+    {
+        "parent_asin": "DIMENSION-2D",
+        "title": "Flat picture frame",
+        "features": [],
+        "description": [],
+        "price": 12.0,
+        "categories": ["Home", "Frames"],
+        "details": {"Size": "5 x 8"},
+        "average_rating": 4.0,
+        "rating_number": 10,
+        "store": "Dimension Test",
+    },
+    {
+        "parent_asin": "DIMENSION-3D",
+        "title": "Rectangular storage bin",
+        "features": [],
+        "description": [],
+        "price": 18.0,
+        "categories": ["Home", "Storage"],
+        "details": {"Size": "19 x 13 x 8-Inch"},
+        "average_rating": 4.0,
+        "rating_number": 10,
+        "store": "Dimension Test",
     },
 ]
 
@@ -183,6 +271,87 @@ class RetrievalTest(unittest.TestCase):
         self.assertNotIn('"color"', expression)
         self.assertNotIn('"10"', expression)
 
+    def test_size_constraints_preserve_structured_short_and_numeric_values(self) -> None:
+        constraints = {"size": ["S", "M", "L", "8", "8.5"]}
+        broad = _constraint_fts_expression(constraints)
+        strict = _strict_fts_expression(None, constraints)
+
+        for value in ("s", "m", "l", "8", "8.5"):
+            term = _size_search_term(value)
+            self.assertIn(f'"{term}"', broad)
+            self.assertIn(f'("{term}")', strict)
+
+        # The same one-character tokens remain excluded without structured
+        # size context, so ordinary prose queries do not become noisier.
+        self.assertEqual(_fts_expression("S M L 8 8.5"), "")
+
+    def test_strict_size_route_finds_letter_integer_and_decimal_sizes(self) -> None:
+        for value in ("S", "M", "L"):
+            results = self.retriever.retrieve_strict_products(
+                category="Shirts",
+                active_constraints={"size": [value]},
+                top_k=20,
+            )
+            self.assertIn(
+                "SIZE-LETTERS",
+                {candidate["parent_asin"] for candidate in results},
+            )
+
+        size_eight = self.retriever.retrieve_strict_products(
+            category="Walking Shoes",
+            active_constraints={"size": ["8"]},
+            top_k=20,
+        )
+        size_eight_half = self.retriever.retrieve_strict_products(
+            category="Walking Shoes",
+            active_constraints={"size": ["8.5"]},
+            top_k=20,
+        )
+
+        self.assertIn("SIZE-8", {item["parent_asin"] for item in size_eight})
+        self.assertEqual(
+            [item["parent_asin"] for item in size_eight_half],
+            ["SIZE-85"],
+        )
+
+    def test_dimensions_do_not_emit_or_index_synthetic_sizes(self) -> None:
+        dimension_products = [
+            product for product in PRODUCTS
+            if product["parent_asin"].startswith("DIMENSION-")
+        ]
+        for product in dimension_products:
+            self.assertEqual(_product_size_terms(product), [])
+
+        size_eight = self.retriever.retrieve_strict_products(
+            active_constraints={"size": ["8"]},
+            top_k=20,
+        )
+        identifiers = {item["parent_asin"] for item in size_eight}
+        self.assertIn("SIZE-8", identifiers)
+        self.assertNotIn("DIMENSION-2D", identifiers)
+        self.assertNotIn("DIMENSION-3D", identifiers)
+
+    def test_immediate_size_chart_context_is_synthetically_indexed(self) -> None:
+        chart_product = next(
+            product for product in PRODUCTS
+            if product["parent_asin"] == "SIZE-CHART"
+        )
+        self.assertEqual(
+            _product_size_terms(chart_product),
+            [_size_search_term(value) for value in ("S", "M", "L")],
+        )
+
+        for value in ("S", "M", "L"):
+            results = self.retriever.retrieve_strict_products(
+                category="Tunics",
+                active_constraints={"size": [value]},
+                top_k=20,
+            )
+            self.assertEqual(
+                [item["parent_asin"] for item in results],
+                ["SIZE-CHART"],
+            )
+
     def test_strict_route_requires_every_disclosed_concept(self) -> None:
         results = self.retriever.retrieve_strict_products(
             category="Running Shoes",
@@ -193,9 +362,28 @@ class RetrievalTest(unittest.TestCase):
         self.assertEqual([item["parent_asin"] for item in results], ["RUN-BLUE"])
         self.assertEqual(
             results[0]["route_hits"],
-            ["current_message", "active_constraints"],
+            ["category", "active_constraints"],
         )
         self.assertGreaterEqual(results[0]["retrieval_score"], STRICT_SCORE_FLOOR)
+
+    def test_strict_category_only_route_reports_only_category_evidence(self) -> None:
+        results = self.retriever.retrieve_strict_products(
+            category="Shoes",
+            top_k=2,
+        )
+
+        self.assertTrue(results)
+        self.assertTrue(all(item["route_hits"] == ["category"] for item in results))
+
+        duplicated_category = self.retriever.retrieve_strict_products(
+            category="Shoes",
+            active_constraints={"category": ["Shoes"]},
+            top_k=2,
+        )
+        self.assertTrue(duplicated_category)
+        self.assertTrue(
+            all(item["route_hits"] == ["category"] for item in duplicated_category)
+        )
 
     def test_strict_route_is_bounded_and_safe_when_empty(self) -> None:
         first = self.retriever.retrieve_strict_products(category="Shoes", top_k=1)
