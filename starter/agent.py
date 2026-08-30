@@ -11,18 +11,30 @@ from starter.retrieval import CatalogRetriever
 
 
 MAX_RECOMMENDATIONS = 10
+EARLY_RECOMMENDATION_LIMIT = 4
+EARLY_RECOMMENDATION_TURNS = 3
 DEFAULT_CANDIDATE_POOL_SIZE = 200
 DEFAULT_CANDIDATE_CACHE_SIZE = 32
+POPULARITY_POSITION_WEIGHT = 0.40
 
 
-def _recommendation_limit(top_k: object) -> int:
+def _recommendation_limit(top_k: object, turn: object = None) -> int:
     if isinstance(top_k, bool):
         return 0
     try:
         value = int(top_k)
     except (TypeError, ValueError):
         return 0
-    return max(0, min(MAX_RECOMMENDATIONS, value))
+    try:
+        normalized_turn = int(turn)
+    except (TypeError, ValueError):
+        normalized_turn = EARLY_RECOMMENDATION_TURNS + 1
+    maximum = (
+        EARLY_RECOMMENDATION_LIMIT
+        if 1 <= normalized_turn <= EARLY_RECOMMENDATION_TURNS
+        else MAX_RECOMMENDATIONS
+    )
+    return max(0, min(maximum, value))
 
 
 def _retrieval_score(candidate: object) -> float:
@@ -33,6 +45,22 @@ def _retrieval_score(candidate: object) -> float:
     except (TypeError, ValueError):
         return 0.0
     return score if math.isfinite(score) else 0.0
+
+
+def _rating_count(candidate: object) -> float:
+    if not isinstance(candidate, dict):
+        return 0.0
+    product = candidate.get("product")
+    if not isinstance(product, dict):
+        return 0.0
+    value = product.get("rating_number", 0)
+    if isinstance(value, bool):
+        return 0.0
+    try:
+        count = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, count) if math.isfinite(count) else 0.0
 
 
 def _fallback_rank(candidates: object) -> list[dict]:
@@ -134,7 +162,10 @@ class Agent:
             # shown under the old intent must therefore become eligible again.
             session["seen_asins"].clear()
 
-        limit = _recommendation_limit(top_k)
+        # Early turns emphasize a short, high-confidence list while the dialog
+        # is still collecting preferences.  Once enough clarification has been
+        # possible, expand to the full competition Top 10 for recall.
+        limit = _recommendation_limit(top_k, turn)
         query = str(decision["search_query"] or message).strip()
         candidates = self._retrieve_candidates(decision, query, session["user_profile"])
 
@@ -221,7 +252,7 @@ class Agent:
         if limit <= 0 or not isinstance(ranked, list):
             return []
 
-        unseen: list[str] = []
+        unseen: list[dict] = []
         response_seen: set[str] = set()
         for candidate in ranked:
             if not isinstance(candidate, dict):
@@ -231,11 +262,25 @@ class Agent:
                 continue
             response_seen.add(parent_asin)
             if parent_asin not in seen_asins:
-                unseen.append(parent_asin)
+                unseen.append(candidate)
+                if len(unseen) >= limit:
+                    break
+
+        # Preserve the relevance ranker's exact recommendation set, then use
+        # catalog popularity only to adjust positions inside that bounded set.
+        # This cannot remove a Top-K hit or change which products become seen.
+        positioned = list(enumerate(unseen))
+        positioned.sort(
+            key=lambda item: (
+                item[0] - POPULARITY_POSITION_WEIGHT * math.log1p(_rating_count(item[1])),
+                item[0],
+                str(item[1].get("parent_asin", "")).strip(),
+            )
+        )
 
         return [
-            {"parent_asin": parent_asin}
-            for parent_asin in unseen[:limit]
+            {"parent_asin": str(candidate["parent_asin"]).strip()}
+            for _, candidate in positioned
         ]
 
     @staticmethod

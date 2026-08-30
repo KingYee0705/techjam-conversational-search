@@ -7,7 +7,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from starter.agent import Agent, MAX_RECOMMENDATIONS, _fallback_rank
+from starter.agent import (
+    EARLY_RECOMMENDATION_LIMIT,
+    Agent,
+    MAX_RECOMMENDATIONS,
+    _fallback_rank,
+)
 from starter.dialog import ALLOWED_ATTRIBUTES
 
 
@@ -119,10 +124,18 @@ class AgentIntegrationTest(unittest.TestCase):
             for recommendation in response["recommendations"]
         ))
 
-    def test_top_k_is_capped_at_competition_maximum(self) -> None:
+    def test_early_turns_return_a_short_focused_list(self) -> None:
         session_id = self.reset()
         response = self.agent.respond(
             session_id, "I'm looking for shirts, but I'm still exploring.", 1, 100
+        )
+
+        self.assertEqual(len(response["recommendations"]), EARLY_RECOMMENDATION_LIMIT)
+
+    def test_later_turns_expand_to_competition_maximum(self) -> None:
+        session_id = self.reset()
+        response = self.agent.respond(
+            session_id, "I'm looking for shirts, but I'm still exploring.", 4, 100
         )
 
         self.assertEqual(len(response["recommendations"]), MAX_RECOMMENDATIONS)
@@ -151,8 +164,8 @@ class AgentIntegrationTest(unittest.TestCase):
 
         first_asins = {item["parent_asin"] for item in first["recommendations"]}
         second_asins = {item["parent_asin"] for item in second["recommendations"]}
-        self.assertEqual(len(first_asins), 10)
-        self.assertEqual(len(second_asins), 10)
+        self.assertEqual(len(first_asins), EARLY_RECOMMENDATION_LIMIT)
+        self.assertEqual(len(second_asins), EARLY_RECOMMENDATION_LIMIT)
         self.assertTrue(first_asins.isdisjoint(second_asins))
 
     def test_override_makes_pre_override_products_eligible_again(self) -> None:
@@ -178,7 +191,10 @@ class AgentIntegrationTest(unittest.TestCase):
         repeated = self.agent.respond(session_id, message, 1, 10)
 
         self.assertEqual(repeated, expected)
-        self.assertEqual(len(self.agent._sessions[session_id]["seen_asins"]), 10)
+        self.assertEqual(
+            len(self.agent._sessions[session_id]["seen_asins"]),
+            EARLY_RECOMMENDATION_LIMIT,
+        )
 
     def test_reset_clears_seen_products_and_cached_response(self) -> None:
         session_id = self.reset()
@@ -301,6 +317,43 @@ class AgentIntegrationTest(unittest.TestCase):
         self.assertEqual(
             selected,
             [{"parent_asin": "NEW"}],
+        )
+
+    def test_selection_uses_popularity_only_inside_the_relevance_batch(self) -> None:
+        selected = Agent._select_recommendations(
+            [
+                {"parent_asin": "FIRST", "product": {"rating_number": 0}},
+                {"parent_asin": "POPULAR", "product": {"rating_number": 1000}},
+                {"parent_asin": "OUTSIDE", "product": {"rating_number": 1_000_000}},
+            ],
+            set(),
+            2,
+        )
+
+        self.assertEqual(
+            selected,
+            [{"parent_asin": "POPULAR"}, {"parent_asin": "FIRST"}],
+        )
+        self.assertNotIn({"parent_asin": "OUTSIDE"}, selected)
+
+    def test_selection_tolerates_invalid_popularity_values(self) -> None:
+        selected = Agent._select_recommendations(
+            [
+                {"parent_asin": "A", "product": {"rating_number": "unknown"}},
+                {"parent_asin": "B", "product": {"rating_number": float("nan")}},
+                {"parent_asin": "C"},
+            ],
+            set(),
+            3,
+        )
+
+        self.assertEqual(
+            selected,
+            [
+                {"parent_asin": "A"},
+                {"parent_asin": "B"},
+                {"parent_asin": "C"},
+            ],
         )
 
     def test_turn_ten_returns_no_follow_up_question(self) -> None:
