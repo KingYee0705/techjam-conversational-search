@@ -2,6 +2,34 @@
 
 Build an AI shopping agent that asks useful follow-up questions and recommends the customer's hidden target product within at most 10 turns.
 
+## Team Solution
+
+Our submission is a deterministic, fully offline shopping agent built with the
+Python standard library. It tracks conversational constraints and intent
+overrides, retrieves candidates from an in-memory SQLite FTS5 index using broad
+and strict routes, reranks them with constraint-aware relevance signals, and
+returns catalog-valid recommendations through `starter.agent:Agent`.
+
+- **Model/API usage:** no LLM or external API; no network or credentials required.
+- **Estimated model/API cost:** USD 0.
+- **Reported token usage:** 0 prompt tokens and 0 completion tokens.
+
+After downloading and verifying the catalog as described below, reproduce the
+submission from the repository root with:
+
+```bash
+python3 -m unittest
+python3 -m evaluator.local_evaluator
+```
+
+On the released **200-session public development set**, the current submission
+scores Hit Rate@10 `1.0`, MRR `0.861851`, MTTC `2.765`, and TechnicalScore
+`0.923255`. These are public-development results, not private-evaluation
+guarantees; results on the organizer's hidden 800 sessions may differ.
+
+See [SUBMISSION_REPORT.md](SUBMISSION_REPORT.md) for architecture details,
+feasibility measurements, limitations, and reproducibility notes.
+
 ## What You Receive
 
 - A frozen catalog of 50,000 products from the `Clothing_Shoes_and_Jewelry` category of Amazon Reviews 2023.

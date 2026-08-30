@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from starter.agent import (
+    CATALOG_PATH_ENV,
     EARLY_RECOMMENDATION_LIMIT,
     Agent,
     MAX_RECOMMENDATIONS,
+    _candidate_question_attribute,
     _fallback_rank,
+    _resolve_catalog_path,
 )
 from starter.dialog import ALLOWED_ATTRIBUTES
 
@@ -101,6 +105,26 @@ class AgentIntegrationTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.agent.respond("missing", "shirts", 1, 10)
 
+    def test_default_catalog_path_does_not_depend_on_working_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.dict(os.environ, {}, clear=True):
+                prior = Path.cwd()
+                try:
+                    os.chdir(directory)
+                    resolved = _resolve_catalog_path(None)
+                finally:
+                    os.chdir(prior)
+
+        self.assertTrue(resolved.is_file())
+        self.assertEqual(resolved.name, "catalog.jsonl")
+
+    def test_catalog_environment_override_is_supported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            catalog = Path(directory) / "custom.jsonl"
+            catalog.write_text("", encoding="utf-8")
+            with mock.patch.dict(os.environ, {CATALOG_PATH_ENV: str(catalog)}):
+                self.assertEqual(_resolve_catalog_path(None), catalog)
+
     def test_response_matches_exact_agent_contract(self) -> None:
         session_id = self.reset()
         response = self.agent.respond(
@@ -153,6 +177,77 @@ class AgentIntegrationTest(unittest.TestCase):
         self.assertTrue(selected)
         self.assertTrue(all("blue" in self.by_asin[asin]["title"].lower() for asin in selected))
 
+    def test_candidate_question_uses_balanced_catalog_evidence(self) -> None:
+        candidates = [
+            {
+                "parent_asin": f"C-{index}",
+                "product": product(
+                    f"C-{index}",
+                    f"{'Blue' if index < 4 else 'Red'} cotton shirt",
+                    features=["cotton fabric"],
+                ),
+            }
+            for index in range(8)
+        ]
+
+        self.assertEqual(
+            _candidate_question_attribute(candidates, set(), set()),
+            "color",
+        )
+        self.assertIsNone(
+            _candidate_question_attribute(candidates, {"color", "material"}, set())
+        )
+
+    def test_decline_retargets_question_and_preserves_pending_context(self) -> None:
+        session_id = self.reset()
+        self.agent.respond(
+            session_id, "I'm looking for shirts, but I'm still exploring.", 1, 10
+        )
+        response = self.agent.respond(
+            session_id,
+            "I don't have a preference for other; please use your judgment.",
+            2,
+            10,
+        )
+
+        self.assertIn(response["ask_attribute"], {"color", "material"})
+        state = self.agent.dialog.get_state(session_id)
+        self.assertEqual(state["pending_attribute"], response["ask_attribute"])
+
+        self.agent.respond(session_id, "Blue.", 3, 10)
+        state = self.agent.dialog.get_state(session_id)
+        self.assertEqual(state["active_constraints"]["color"], ["Blue"])
+
+    def test_exclusions_and_priority_metadata_flow_to_ranking(self) -> None:
+        session_id = self.reset()
+        decision = {
+            "search_query": "shirts blue",
+            "category": "shirts",
+            "active_constraints": {"color": ["blue"]},
+            "excluded_constraints": {"style": ["casual"]},
+            "negative_constraints": {"material": ["polyester"]},
+            "constraint_priorities": {"color": {"blue": "hard"}},
+            "message": "Do you have another preference?",
+            "ask_attribute": "other",
+            "is_override": False,
+        }
+
+        with (
+            mock.patch.object(self.agent.dialog, "process_turn", return_value=decision),
+            mock.patch.object(self.agent, "_retrieve_candidates", return_value=[]),
+            mock.patch("starter.agent.rank_products", return_value=[]) as rank,
+        ):
+            self.agent.respond(session_id, "blue shirts, not polyester", 1, 10)
+
+        self.assertEqual(
+            rank.call_args.kwargs["excluded_constraints"],
+            {"material": ["polyester"]},
+        )
+        self.assertEqual(
+            rank.call_args.kwargs["constraint_priorities"],
+            {"color": {"blue": "hard"}},
+        )
+
     def test_continuing_session_explores_unseen_products(self) -> None:
         session_id = self.reset()
         first = self.agent.respond(
@@ -181,6 +276,21 @@ class AgentIntegrationTest(unittest.TestCase):
         )
 
         self.assertEqual(first["recommendations"], overridden["recommendations"])
+
+    def test_switch_override_resets_seen_products_for_the_new_intent(self) -> None:
+        session_id = self.reset()
+        red_first = self.agent.respond(
+            session_id, "I'm looking for shirts. color: red.", 1, 10
+        )
+        blue = self.agent.respond(
+            session_id, "Switch from red to blue.", 2, 10
+        )
+        red_again = self.agent.respond(
+            session_id, "Switch from blue to red.", 3, 10
+        )
+
+        self.assertNotEqual(red_first["recommendations"], blue["recommendations"])
+        self.assertEqual(red_first["recommendations"], red_again["recommendations"])
 
     def test_duplicate_request_is_cached_and_defensively_copied(self) -> None:
         session_id = self.reset()
@@ -335,6 +445,26 @@ class AgentIntegrationTest(unittest.TestCase):
             [{"parent_asin": "POPULAR"}, {"parent_asin": "FIRST"}],
         )
         self.assertNotIn({"parent_asin": "OUTSIDE"}, selected)
+
+    def test_popularity_respects_the_maximum_relevance_promotion(self) -> None:
+        for original_index in range(10):
+            with self.subTest(original_index=original_index):
+                candidates = [
+                    {
+                        "parent_asin": f"ITEM-{index}",
+                        "product": {
+                            "rating_number": 1_000_000 if index == original_index else 0
+                        },
+                    }
+                    for index in range(10)
+                ]
+                selected = Agent._select_recommendations(candidates, set(), 10)
+                order = [item["parent_asin"] for item in selected]
+
+                self.assertGreaterEqual(
+                    order.index(f"ITEM-{original_index}"),
+                    max(0, original_index - 4),
+                )
 
     def test_selection_tolerates_invalid_popularity_values(self) -> None:
         selected = Agent._select_recommendations(
