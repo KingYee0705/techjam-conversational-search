@@ -1,3 +1,17 @@
+"""Competition entry point and end-to-end shopping-agent orchestrator.
+
+Judge-facing data flow for one turn::
+
+    Agent.respond
+      -> DialogStateManager.process_turn       (understand current intent)
+      -> CatalogRetriever + EmbeddingRetriever (generate candidate union)
+      -> rank_products                         (score relevance/constraints)
+      -> recommendation policy                 (unseen shortlist + API output)
+
+The optional embedding route is local and has a deterministic BM25 fallback;
+the public Agent contract remains identical in either mode.
+"""
+
 from __future__ import annotations
 
 import copy
@@ -9,6 +23,11 @@ from collections import OrderedDict
 from pathlib import Path
 
 from starter.dialog import DialogStateManager
+from starter.embedding_retrieval import (
+    DEFAULT_MODEL as DEFAULT_EMBEDDING_MODEL,
+    EmbeddingRetriever,
+    semantic_query,
+)
 from starter.ranking import rank_products
 from starter.retrieval import CatalogRetriever
 
@@ -23,6 +42,11 @@ MAX_POPULARITY_PROMOTION = 4.0
 MODULE_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CATALOG_PATH = Path("data/catalog.jsonl")
 CATALOG_PATH_ENV = "TECHJAM_CATALOG_PATH"
+ENABLE_EMBEDDINGS_ENV = "TECHJAM_ENABLE_EMBEDDINGS"
+EMBEDDING_MODEL_ENV = "TECHJAM_EMBEDDING_MODEL"
+EMBEDDING_CACHE_ENV = "TECHJAM_EMBEDDING_CACHE"
+SEMANTIC_SCORE_SCALE_ENV = "TECHJAM_SEMANTIC_SCORE_SCALE"
+DEFAULT_SEMANTIC_SCORE_SCALE = 0.75
 CANDIDATE_QUESTION_LIMIT = 40
 CANDIDATE_QUESTION_MIN_CANDIDATES = 8
 CANDIDATE_QUESTION_MIN_COVERAGE = 0.35
@@ -65,6 +89,21 @@ def _resolve_catalog_path(catalog_path: str | Path | None) -> Path:
     if path.exists():
         return path.resolve()
     return (MODULE_ROOT / path).resolve()
+
+
+def _environment_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _semantic_score_scale(value: object = None) -> float:
+    configured = os.environ.get(SEMANTIC_SCORE_SCALE_ENV) if value is None else value
+    if configured in (None, ""):
+        return DEFAULT_SEMANTIC_SCORE_SCALE
+    try:
+        score = float(configured)
+    except (TypeError, ValueError):
+        return DEFAULT_SEMANTIC_SCORE_SCALE
+    return max(0.0, min(1.0, score)) if math.isfinite(score) else DEFAULT_SEMANTIC_SCORE_SCALE
 
 
 def _recommendation_limit(top_k: object, turn: object = None) -> int:
@@ -271,10 +310,11 @@ def _candidate_signature(decision: dict, user_profile: dict, query: str) -> tupl
 
 
 class Agent:
-    """Offline conversational shopping agent.
+    """Public Agent API that coordinates state, retrieval, and ranking.
 
-    The agent combines the independently tested dialog, retrieval, and ranking
-    modules. It needs no network service or API key, so model-token usage is zero.
+    No generative model or external API is called, so reported token usage and
+    API cost remain zero. Dense retrieval, when enabled, uses a local model and
+    falls back to the lexical path if its dependency or cache is unavailable.
     """
 
     def __init__(
@@ -283,6 +323,9 @@ class Agent:
         *,
         candidate_pool_size: int = DEFAULT_CANDIDATE_POOL_SIZE,
         candidate_cache_size: int = DEFAULT_CANDIDATE_CACHE_SIZE,
+        embedding_retriever: object = None,
+        enable_embeddings: bool | None = None,
+        semantic_score_scale: float | None = None,
     ) -> None:
         self.catalog_path = _resolve_catalog_path(catalog_path)
         if not self.catalog_path.is_file():
@@ -292,7 +335,32 @@ class Agent:
             )
         self.candidate_pool_size = max(50, int(candidate_pool_size))
         self.candidate_cache_size = max(0, int(candidate_cache_size))
+
+        # Startup stage A: the always-available lexical index over the frozen catalog.
         self.retriever = CatalogRetriever(self.catalog_path)
+
+        # Startup stage B: optional local semantic index. It is deliberately
+        # opt-in so the standard-library BM25 submission stays reproducible.
+        self.embedding_retriever = embedding_retriever
+        self.semantic_score_scale = _semantic_score_scale(semantic_score_scale)
+        embeddings_enabled = (
+            _environment_flag(ENABLE_EMBEDDINGS_ENV)
+            if enable_embeddings is None
+            else bool(enable_embeddings)
+        )
+        if self.embedding_retriever is None and embeddings_enabled:
+            try:
+                self.embedding_retriever = EmbeddingRetriever(
+                    self.catalog_path,
+                    model_name_or_path=os.environ.get(
+                        EMBEDDING_MODEL_ENV, DEFAULT_EMBEDDING_MODEL
+                    ),
+                    cache_dir=os.environ.get(EMBEDDING_CACHE_ENV) or None,
+                )
+            except Exception as error:
+                LOGGER.warning(
+                    "Semantic retrieval unavailable; continuing with BM25: %s", error
+                )
         self.dialog = DialogStateManager()
         self._sessions: dict[str, dict] = {}
         self._candidate_cache: OrderedDict[tuple, list[dict]] = OrderedDict()
@@ -322,6 +390,8 @@ class Agent:
         session = self._sessions[session_id]
         message = str(user_message or "")
 
+        # 1. Make repeated harness calls idempotent. The public evaluator calls
+        # respond twice with the same turn to verify deterministic behavior.
         if (
             session["last_turn"] == turn
             and session["last_user_message"] == message
@@ -329,12 +399,16 @@ class Agent:
         ):
             return copy.deepcopy(session["last_response"])
 
+        # 2. Convert free text into structured, evolving intent: category,
+        # active/negative constraints, priorities, and the next question.
         decision = self.dialog.process_turn(session_id, message, turn)
         if decision["is_override"]:
             # The evaluator ignores hits before a new intent is sent. Products
             # shown under the old intent must therefore become eligible again.
             session["seen_asins"].clear()
 
+        # 3. Generate a hybrid candidate pool from lexical, strict-conjunction,
+        # and (when enabled) semantic routes.
         # Early turns use short, disjoint batches while the dialog is still
         # collecting preferences; later turns expand to the full Top 10 for
         # recall. This is a deliberate sequential-exploration tradeoff.
@@ -342,6 +416,7 @@ class Agent:
         query = str(decision["search_query"] or message).strip()
         candidates = self._retrieve_candidates(decision, query, session["user_profile"])
 
+        # 4. Rerank the union with current intent and hard/soft constraints.
         try:
             ranked = rank_products(
                 candidates,
@@ -362,6 +437,8 @@ class Agent:
             LOGGER.warning("Ranking failed; using deterministic retrieval order: %s", error)
             ranked = _fallback_rank(candidates)
 
+        # 5. After "no preference", use the ranked pool to ask a field that
+        # actually separates viable products instead of blindly repeating order.
         if decision.get("declined_attribute") and decision.get("ask_attribute"):
             dialog_state = self.dialog.get_state(session_id)
             current_attribute = str(decision["ask_attribute"])
@@ -384,6 +461,8 @@ class Agent:
                 )
                 decision["ask_attribute"] = adaptive_attribute
 
+        # 6. Apply the turn-aware shortlist policy and avoid repeating products
+        # already shown under the same intent.
         recommendations = self._select_recommendations(
             ranked,
             session["seen_asins"],
@@ -393,6 +472,8 @@ class Agent:
             recommendation["parent_asin"] for recommendation in recommendations
         )
 
+        # 7. Return exactly the organizer's Agent API shape. Internal scores and
+        # product text never leak into the scored recommendation payload.
         response = {
             "message": self._customer_message(decision, bool(recommendations)),
             "ask_attribute": decision["ask_attribute"],
@@ -410,12 +491,18 @@ class Agent:
         query: str,
         user_profile: dict,
     ) -> list[dict]:
+        """Create one union of all enabled retrieval routes for this intent."""
+
         signature = _candidate_signature(decision, user_profile, query)
+
+        # Identical dialog states reuse candidates across sessions/turn retries.
         cached = self._candidate_cache.get(signature)
         if cached is not None:
             self._candidate_cache.move_to_end(signature)
             return cached
 
+        # Route group 1: weighted OR-style FTS searches for message,
+        # constraints, category, and low-weight profile evidence.
         try:
             candidates = self.retriever.retrieve_products(
                 query,
@@ -430,6 +517,7 @@ class Agent:
         if not isinstance(candidates, list):
             return []
 
+        # Route group 2: a high-precision FTS conjunction over disclosed facts.
         try:
             strict_candidates = self.retriever.retrieve_strict_products(
                 category=decision["category"],
@@ -441,6 +529,59 @@ class Agent:
             strict_candidates = []
         if isinstance(strict_candidates, list):
             candidates = [*candidates, *strict_candidates]
+
+        # Route group 3: semantic nearest neighbours. This expands recall for
+        # paraphrases; it does not replace exact lexical constraint matching.
+        if self.embedding_retriever is not None:
+            dense_query = semantic_query(
+                query,
+                decision.get("category"),
+                decision.get("active_constraints"),
+            )
+            try:
+                semantic_hits = self.embedding_retriever.retrieve(
+                    dense_query,
+                    top_k=self.candidate_pool_size,
+                )
+                if not isinstance(semantic_hits, list):
+                    semantic_hits = []
+                products = self.retriever.products_by_asin(
+                    hit.get("parent_asin")
+                    for hit in semantic_hits
+                    if isinstance(hit, dict)
+                )
+                semantic_candidates: list[dict] = []
+                for hit in semantic_hits:
+                    if not isinstance(hit, dict):
+                        continue
+                    parent_asin = str(hit.get("parent_asin", "")).strip()
+                    product = products.get(parent_asin)
+                    if not parent_asin or product is None:
+                        continue
+                    try:
+                        similarity = float(hit.get("semantic_similarity", 0.0))
+                    except (TypeError, ValueError):
+                        similarity = 0.0
+                    if not math.isfinite(similarity):
+                        similarity = 0.0
+                    semantic_candidates.append({
+                        "parent_asin": parent_asin,
+                        "product": product,
+                        # Keep semantic evidence conservative in the first A/B
+                        # experiment. Lexical and structured constraints retain
+                        # primary control of the final rank.
+                        "retrieval_score": (
+                            self.semantic_score_scale * max(0.0, min(1.0, similarity))
+                        ),
+                        "semantic_similarity": max(-1.0, min(1.0, similarity)),
+                        "route_hits": ["semantic"],
+                    })
+                candidates = [*candidates, *semantic_candidates]
+            except Exception as error:
+                LOGGER.warning(
+                    "Semantic candidate retrieval failed; using BM25 candidates: %s",
+                    error,
+                )
 
         if self.candidate_cache_size:
             self._candidate_cache[signature] = candidates
@@ -517,6 +658,9 @@ class Agent:
 
     def close(self) -> None:
         self._candidate_cache.clear()
+        close_embedding = getattr(self.embedding_retriever, "close", None)
+        if callable(close_embedding):
+            close_embedding()
         self.retriever.close()
 
     def __enter__(self) -> Agent:

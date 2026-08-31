@@ -1,3 +1,10 @@
+"""Constraint-aware deterministic reranking for the merged candidate pool.
+
+The ranker is intentionally source-agnostic: BM25, strict, and semantic
+candidates share one contract. It combines retrieval evidence with direct
+message/constraint coverage, then applies safe budget and exclusion ordering.
+"""
+
 from __future__ import annotations
 
 import math
@@ -66,6 +73,7 @@ ROUTE_WEIGHTS = {
     "current_message": 1.00,
     "active_constraints": 0.80,
     "category": 0.60,
+    "semantic": 0.45,
     "profile": 0.25,
 }
 SCORE_WEIGHTS = {
@@ -76,6 +84,9 @@ SCORE_WEIGHTS = {
     "profile": 0.03,
     "quality": 0.02,
 }
+# The weights sum to one and encode the design priority: the current request
+# and active constraints dominate the small historical/profile and popularity
+# priors. Semantic candidates enter through the normalized retrieval signal.
 CONSTRAINT_PRIORITY_WEIGHTS = {
     "hard": 1.5,
     "normal": 1.0,
@@ -856,6 +867,8 @@ def rank_products(
     if limit == 0:
         return []
 
+    # 1. A product can arrive through several routes. Merge route evidence and
+    # keep one immutable candidate per parent_asin.
     unique = _deduplicate(candidates)
     if not unique:
         return []
@@ -865,6 +878,7 @@ def rank_products(
         default=0.0,
     )
 
+    # 2. Compute the shared relevance formula for every candidate.
     scored: list[tuple[float, str, dict, float | None, float]] = []
     for candidate in unique:
         parent_asin = str(candidate["parent_asin"])
@@ -895,6 +909,8 @@ def rank_products(
     ) -> tuple[float, str]:
         return (-item[0], item[1])
 
+    # 3. Apply budget policy after relevance: verified in-budget products lead,
+    # unknown prices remain eligible, and over-budget items are fallback only.
     def order_group(
         items: list[tuple[float, str, dict, float | None, float]],
     ) -> list[tuple[float, str, dict, float | None, float]]:
@@ -946,6 +962,8 @@ def rank_products(
         viable = [*within_budget, *unknown_price]
         return viable if len(viable) >= 10 else [*viable, *over_budget]
 
+    # 4. Known explicit-negative violations trail compliant/unknown products;
+    # missing catalog evidence is never treated as proof of a mismatch.
     non_violating = order_group([item for item in scored if item[4] == 0.0])
     known_violations = order_group([item for item in scored if item[4] > 0.0])
     ordered = (

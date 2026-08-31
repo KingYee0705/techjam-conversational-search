@@ -1,3 +1,10 @@
+"""Deterministic conversation memory and clarification strategy.
+
+This module turns each customer message into the structured ``decision`` used
+by both retrieval routes and the ranker. It keeps active preferences separate
+from superseded override values, explicit negatives, and declined attributes.
+"""
+
 from __future__ import annotations
 
 import copy
@@ -597,6 +604,8 @@ class DialogStateManager:
         }
 
     def process_turn(self, session_id: str, user_message: str, turn: int) -> dict:
+        """Update one session and return the current structured search intent."""
+
         if session_id not in self._sessions:
             raise RuntimeError("reset must be called before process_turn")
         try:
@@ -615,6 +624,8 @@ class DialogStateManager:
         if normalized_turn < state["current_turn"]:
             raise ValueError("turns must be processed in increasing order")
 
+        # A short answer such as "blue" belongs to the attribute asked on the
+        # preceding turn; an intent override cancels that pending association.
         pending = state["pending_attribute"]
         state["pending_attribute"] = None
         is_override = bool(OVERRIDE_SIGNAL_RE.search(message))
@@ -624,6 +635,8 @@ class DialogStateManager:
 
         state["history"].append({"turn": normalized_turn, "user_message": message})
 
+        # Interpretation precedence matters: a decline must not become a real
+        # constraint, and an override must replace rather than append intent.
         declined = self._declined_attribute(message, pending)
         if declined:
             declined_attribute, clear_existing = declined
@@ -1167,6 +1180,9 @@ class DialogStateManager:
     ) -> dict:
         active = self._active_constraints(state)
         non_category = sum(len(values) for key, values in active.items() if key != "category")
+        # This dictionary is the explicit boundary between language/state
+        # handling and retrieval/ranking. Keeping it structured makes behavior
+        # testable without an LLM or access to hidden labels.
         return {
             "search_query": self._search_query(state),
             "category": state["category"],

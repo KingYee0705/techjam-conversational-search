@@ -29,6 +29,24 @@ PROFILE = {
 }
 
 
+class FakeEmbeddingRetriever:
+    def __init__(self, parent_asin: str) -> None:
+        self.parent_asin = parent_asin
+        self.queries: list[str] = []
+        self.closed = False
+
+    def retrieve(self, query: str, *, top_k: int) -> list[dict]:
+        self.queries.append(query)
+        return [{
+            "parent_asin": self.parent_asin,
+            "semantic_similarity": 0.8,
+            "route_hits": ["semantic"],
+        }][:top_k]
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def product(
     parent_asin: str,
     title: str,
@@ -176,6 +194,35 @@ class AgentIntegrationTest(unittest.TestCase):
         selected = [item["parent_asin"] for item in response["recommendations"]]
         self.assertTrue(selected)
         self.assertTrue(all("blue" in self.by_asin[asin]["title"].lower() for asin in selected))
+
+    def test_optional_embedding_route_hydrates_and_merges_candidates(self) -> None:
+        fake = FakeEmbeddingRetriever("RED-00")
+        agent = Agent(
+            self.catalog_path,
+            candidate_pool_size=100,
+            embedding_retriever=fake,
+        )
+        try:
+            candidates = agent._retrieve_candidates(
+                {
+                    "active_constraints": {"feature": ["standing all day"]},
+                    "category": "shirts",
+                },
+                "comfortable for standing all day",
+                PROFILE,
+            )
+        finally:
+            agent.close()
+
+        semantic = next(
+            candidate for candidate in candidates
+            if candidate["parent_asin"] == "RED-00"
+            and "semantic" in candidate.get("route_hits", [])
+        )
+        self.assertEqual(semantic["product"]["parent_asin"], "RED-00")
+        self.assertAlmostEqual(semantic["retrieval_score"], 0.6)
+        self.assertIn("standing all day", fake.queries[0])
+        self.assertTrue(fake.closed)
 
     def test_candidate_question_uses_balanced_catalog_evidence(self) -> None:
         candidates = [
