@@ -69,6 +69,8 @@ FIELD_WEIGHTS = {
     "details": 0.55,
     "description": 0.40,
 }
+# Route weights describe provenance inside the small route-evidence signal;
+# they are not percentages of the final score.
 ROUTE_WEIGHTS = {
     "current_message": 1.00,
     "active_constraints": 0.80,
@@ -86,7 +88,8 @@ SCORE_WEIGHTS = {
 }
 # The weights sum to one and encode the design priority: the current request
 # and active constraints dominate the small historical/profile and popularity
-# priors. Semantic candidates enter through the normalized retrieval signal.
+# priors. Semantic similarity is calibrated into ``retrieval_score``; it is not
+# an additional hidden final-score term.
 CONSTRAINT_PRIORITY_WEIGHTS = {
     "hard": 1.5,
     "normal": 1.0,
@@ -808,6 +811,8 @@ def _copy_candidate(candidate: dict, parent_asin: str) -> dict:
 
 
 def _deduplicate(candidates: object) -> list[dict]:
+    """Keep the strongest retrieval score and merge provenance for each ASIN."""
+
     if not isinstance(candidates, list):
         return []
     unique: dict[str, dict] = {}

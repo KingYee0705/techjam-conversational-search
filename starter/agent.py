@@ -533,6 +533,8 @@ class Agent:
         # Route group 3: semantic nearest neighbours. This expands recall for
         # paraphrases; it does not replace exact lexical constraint matching.
         if self.embedding_retriever is not None:
+            # Product vectors were loaded or built during Agent initialization;
+            # this turn embeds only the distilled current intent.
             dense_query = semantic_query(
                 query,
                 decision.get("category"),

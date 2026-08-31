@@ -573,9 +573,9 @@ def _obvious_constraints(message: str) -> list[str]:
 class DialogStateManager:
     """Deterministic per-session preference memory and question strategy.
 
-    Person 4 can pass ``search_query``, ``active_constraints``, and ``category``
-    directly to ``CatalogRetriever``, then pass the same query and constraints to
-    ``rank_products``.
+    Active records, explicit negatives, superseded values, declined fields, and
+    pending-question context remain separate. The resulting ``decision`` gives
+    retrieval and ranking one testable view of the customer's current intent.
     """
 
     def __init__(self, broad_question_limit: int = 2) -> None:
