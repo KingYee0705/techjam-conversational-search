@@ -1,4 +1,4 @@
-# IntentWeave — Conversational Product Search
+# IntentCart — Conversational Product Search
 
 > A local, hybrid product-search agent that turns a multi-turn conversation
 > into ranked recommendations from a frozen catalog of 50,000 Amazon products.
@@ -326,14 +326,6 @@ measured.
 - If ranking fails, the agent uses deterministic retrieval order. If semantic
   retrieval fails, it continues with broad and strict BM25 without changing
   the API contract.
-
-## Demo and Devpost
-
-- [Detailed demo video script](docs/DEMO_VIDEO_WALKTHROUGH.md)
-- [Copy-ready Devpost write-up](docs/DEVPOST_WRITEUP.md)
-- [Technical submission report](SUBMISSION_REPORT.md)
-- [Competition specification](docs/competition_specification.md)
-- [Final evaluation FAQ](docs/final_evaluation_faq.md)
 
 ## Team contributions
 
