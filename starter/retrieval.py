@@ -1,3 +1,10 @@
+"""Deterministic lexical candidate generation over the frozen catalog.
+
+SQLite FTS5 supplies four broad evidence routes (message, active constraints,
+category, and profile) plus a separate strict-conjunction route. Scores are
+normalized before candidates cross the module boundary into ``ranking.py``.
+"""
+
 from __future__ import annotations
 
 import json
@@ -363,7 +370,7 @@ def _route_scores(raw_scores: list[float]) -> list[float]:
 
 
 class CatalogRetriever:
-    """Offline multi-route FTS5 retriever for the frozen product catalog."""
+    """Offline multi-route BM25/FTS5 retriever for the product catalog."""
 
     def __init__(self, catalog_path: str | Path = "data/catalog.jsonl") -> None:
         self.catalog_path = Path(catalog_path)
@@ -375,6 +382,8 @@ class CatalogRetriever:
             raise
 
     def _build_index(self) -> None:
+        """Build a field-weighted in-memory index once when the Agent starts."""
+
         cursor = self.connection.cursor()
         try:
             cursor.execute(
@@ -480,6 +489,8 @@ class CatalogRetriever:
         merged: dict[str, dict] = {}
         score_parts: dict[str, float] = {}
 
+        # Search each view of the intent independently, then fuse normalized
+        # evidence. A product found by multiple routes receives corroboration.
         for route in active_routes:
             for parent_asin, product, score in self._search_expression(
                 route_expressions[route], route_limit
@@ -565,6 +576,26 @@ class CatalogRetriever:
             }
             for parent_asin, product, strict_score in strict_results
         ]
+
+    def products_by_asin(self, parent_asins: Iterable[object]) -> dict[str, dict]:
+        """Hydrate a bounded set of catalog identifiers for auxiliary routes."""
+
+        identifiers = list(dict.fromkeys(
+            str(value).strip() for value in parent_asins if str(value).strip()
+        ))
+        products: dict[str, dict] = {}
+        # Stay below SQLite's conservative host-parameter limit.
+        for start in range(0, len(identifiers), 500):
+            chunk = identifiers[start:start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = self.connection.execute(
+                f"SELECT parent_asin, product_json FROM products "
+                f"WHERE parent_asin IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            for parent_asin, product_json in rows:
+                products[str(parent_asin)] = json.loads(str(product_json))
+        return products
 
     def close(self) -> None:
         self.connection.close()

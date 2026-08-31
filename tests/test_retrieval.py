@@ -205,6 +205,14 @@ class RetrievalTest(unittest.TestCase):
         self.assertIn("current_message", candidate["route_hits"])
         self.assertEqual(candidate["retrieval_score"], 1.0)
 
+    def test_products_by_asin_hydrates_known_identifiers(self) -> None:
+        products = self.retriever.products_by_asin(
+            ["RUN-RED", "missing", "RUN-BLUE", "RUN-RED"]
+        )
+
+        self.assertEqual(set(products), {"RUN-BLUE", "RUN-RED"})
+        self.assertEqual(products["RUN-BLUE"]["title"], "Blue trail running shoe")
+
     def test_title_match_is_ranked_first_for_current_message(self) -> None:
         results = self.retriever.retrieve_products("blue trail running", top_k=5)
 
