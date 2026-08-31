@@ -578,7 +578,7 @@ class CatalogRetriever:
         ]
 
     def products_by_asin(self, parent_asins: Iterable[object]) -> dict[str, dict]:
-        """Hydrate a bounded set of catalog identifiers for auxiliary routes."""
+        """Hydrate dense-route IDs without reparsing the catalog JSONL file."""
 
         identifiers = list(dict.fromkeys(
             str(value).strip() for value in parent_asins if str(value).strip()

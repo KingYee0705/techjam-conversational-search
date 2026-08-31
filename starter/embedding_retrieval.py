@@ -222,7 +222,7 @@ class EmbeddingRetriever:
         )
 
     def retrieve(self, query: object, *, top_k: int = 200) -> list[dict]:
-        """Return the nearest product IDs for one current-intent query."""
+        """Return lightweight nearest IDs/scores for later catalog hydration."""
 
         try:
             limit = max(0, min(int(top_k), len(self.parent_asins)))

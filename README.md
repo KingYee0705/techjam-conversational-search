@@ -4,15 +4,41 @@ Build an AI shopping agent that asks useful follow-up questions and recommends t
 
 ## Team Solution
 
-Our submission is a deterministic, fully offline shopping agent built with the
-Python standard library. It tracks conversational constraints and intent
-overrides, retrieves candidates from an in-memory SQLite FTS5 index using broad
-and strict routes, reranks them with constraint-aware relevance signals, and
-returns catalog-valid recommendations through `starter.agent:Agent`.
+Our solution is a deterministic, fully local shopping agent. It tracks evolving
+constraints and intent overrides, generates candidates through broad and strict
+SQLite FTS5/BM25 routes, optionally adds semantic candidates from a local
+MiniLM embedding index, and reranks their union with interpretable
+constraint-aware signals.
 
-- **Model/API usage:** no LLM or external API; no network or credentials required.
+- **Generative/API usage:** no LLM call or external API during evaluation.
+- **Optional local model:** `sentence-transformers/all-MiniLM-L6-v2` for dense
+  candidate retrieval.
 - **Estimated model/API cost:** USD 0.
-- **Reported token usage:** 0 prompt tokens and 0 completion tokens.
+- **Reported API token usage:** 0 prompt tokens and 0 completion tokens.
+- **Fallback:** if the local embedding model is unavailable, the complete BM25
+  and strict-retrieval path remains active.
+
+### Architecture at a glance
+
+```text
+Customer turn
+     |
+     v
+Dialog state and intent memory
+     |
+     +-------------------+-----------------------+
+     |                   |                       |
+     v                   v                       v
+Broad BM25 routes   Strict AND route       MiniLM semantic route
+     |                   |                 (optional, local)
+     +-------------------+-----------------------+
+                         |
+                         v
+              Union + deterministic reranking
+                         |
+                         v
+           Follow-up question + ranked parent_asin list
+```
 
 After downloading and verifying the catalog as described below, reproduce the
 submission from the repository root with:
@@ -22,13 +48,51 @@ python3 -m unittest
 python3 -m evaluator.local_evaluator
 ```
 
-On the released **200-session public development set**, the current submission
-scores Hit Rate@10 `1.0`, MRR `0.861851`, MTTC `2.765`, and TechnicalScore
-`0.923255`. These are public-development results, not private-evaluation
-guarantees; results on the organizer's hidden 800 sessions may differ.
+On the released **200-session public development set**, the default lexical
+configuration scored Hit Rate@10 `1.0`, MRR `0.861851`, MTTC `2.765`, and
+TechnicalScore `0.923255`. Enabling semantic candidate retrieval with the
+conservative `0.75` calibration produced TechnicalScore `0.923318`. This is a
+small public-set improvement, not a guarantee about hidden sessions.
 
 See [SUBMISSION_REPORT.md](SUBMISSION_REPORT.md) for architecture details,
-feasibility measurements, limitations, and reproducibility notes.
+feasibility measurements, limitations, and reproducibility notes. See
+[`docs/DEMO_VIDEO_WALKTHROUGH.md`](docs/DEMO_VIDEO_WALKTHROUGH.md) for the exact
+judge-facing repository sequence and timed narration.
+
+## Run modes
+
+### Core lexical mode
+
+The core mode uses Python 3.10+ and SQLite with FTS5:
+
+```bash
+python3 -m unittest
+python3 -m evaluator.local_evaluator
+```
+
+### Optional hybrid embedding mode
+
+Install the optional dependencies and provision the model while network access
+is available:
+
+```bash
+python3 -m pip install -r requirements-embedding.txt
+python3 -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2').save('models/all-MiniLM-L6-v2')"
+```
+
+Then run entirely locally:
+
+```bash
+TECHJAM_ENABLE_EMBEDDINGS=1 \
+TECHJAM_EMBEDDING_MODEL="$PWD/models/all-MiniLM-L6-v2" \
+TECHJAM_EMBEDDING_CACHE="$PWD/data/.embedding_cache" \
+TECHJAM_SEMANTIC_SCORE_SCALE=0.75 \
+python3 -m evaluator.local_evaluator
+```
+
+The first embedding-enabled startup builds the product-vector cache. Later
+runs reuse it. The model loader uses `local_files_only=True`, so final offline
+evaluation requires the model directory to be provisioned in advance.
 
 ## What You Receive
 
@@ -64,7 +128,9 @@ Verify the downloaded file using the published `SHA256SUMS` file.
 
 ## Run the Starter
 
-Python 3.10 or later is recommended. The starter uses only the Python standard library.
+Python 3.10 or later is recommended. The default lexical route uses only the
+Python standard library and SQLite FTS5; the optional embedding route uses the
+separate dependency manifest above.
 
 ```bash
 python3 -m evaluator.local_evaluator
@@ -123,10 +189,16 @@ Teams may use any legally accessible LLM API or local model. Teams manage their 
 data/public_set.jsonl             200 labeled development sessions
 docs/competition_specification.md participant rules and evaluation protocol
 docs/final_evaluation_faq.md      final evaluation and judging clarifications
+docs/DEMO_VIDEO_WALKTHROUGH.md    timed judge-facing repository walkthrough
 docs/agent_api_contract.json      machine-readable Agent contract
 docs/evaluation_config.json       scoring configuration
 docs/baseline_results.json        reproducible weak-starter reference score
-starter/agent.py                  editable weak starter
+starter/agent.py                  public API and orchestration
+starter/dialog.py                 conversation state and clarification logic
+starter/retrieval.py              broad and strict BM25 candidate routes
+starter/embedding_retrieval.py    optional local semantic candidate route
+starter/ranking.py                deterministic constraint-aware reranker
+requirements-embedding.txt        optional dense-retrieval dependencies
 evaluator/local_evaluator.py      public-set simulator and scorer
 ```
 

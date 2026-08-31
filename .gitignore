@@ -6,6 +6,7 @@ results.json
 data/catalog.jsonl
 data/releases/
 data/.embedding_cache/
+models/
 # Organizer-only code, private evaluation data, manifests, and build reports.
 organizer/
 secure/
