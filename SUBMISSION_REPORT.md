@@ -84,10 +84,10 @@ run:
 
 ```bash
 TECHJAM_ENABLE_EMBEDDINGS=1 \
-TECHJAM_EMBEDDING_MODEL="$PWD/models/all-MiniLM-L6-v2" \
+TECHJAM_EMBEDDING_MODEL="$PWD/models/all-MiniLM-L6-v2-1110a243" \
 TECHJAM_EMBEDDING_CACHE="$PWD/data/.embedding_cache" \
 TECHJAM_SEMANTIC_SCORE_SCALE=0.75 \
-python3 -m evaluator.local_evaluator
+python3 -m evaluator.local_evaluator --output results-hybrid.json
 ```
 
 ## Public development validation

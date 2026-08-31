@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import unittest
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError:  # Core lexical mode intentionally has no NumPy dependency.
+    np = None
 
 from starter.embedding_retrieval import (
     EmbeddingRetriever,
@@ -45,6 +48,7 @@ class EmbeddingRetrievalTest(unittest.TestCase):
             "feature: arch support. material: mesh",
         )
 
+    @unittest.skipIf(np is None, "NumPy is optional outside semantic mode")
     def test_retrieve_orders_cosine_scores_and_respects_top_k(self) -> None:
         retriever = EmbeddingRetriever.__new__(EmbeddingRetriever)
         retriever._np = np
