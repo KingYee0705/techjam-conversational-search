@@ -347,9 +347,3 @@ UCSD. See [DATA_ATTRIBUTION.md](DATA_ATTRIBUTION.md) before using or
 redistributing the data. Raw user IDs, review text, timestamps, and purchase
 history are not exposed to the agent.
 
-## Submission policy
-
-The final repository commit submitted by the Devpost deadline is frozen for
-the organizer's final evaluation. Do not commit API keys, unreleased labels,
-the downloaded catalog, model weights, or generated embedding caches. See
-[docs/submission_rules.md](docs/submission_rules.md) for the complete policy.
