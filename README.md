@@ -194,16 +194,19 @@ python3 -m unittest
 python3 -m evaluator.local_evaluator --output results-lexical.json
 ```
 
-The evaluator writes aggregate and per-session output to `results.json`.
+The evaluator writes aggregate and per-session output to
+`results-lexical.json`.
 
-### 3. Run the featured hybrid agent
+### 3. Reproduce the featured hybrid result
 
 Install the optional dependencies and download the model while network access
 is available:
 
 ```bash
-python3 -m pip install -r requirements-embedding.txt
-python3 -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', revision='1110a243fdf4706b3f48f1d95db1a4f5529b4d41').save('models/all-MiniLM-L6-v2-1110a243')"
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-embedding.txt
+python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', revision='1110a243fdf4706b3f48f1d95db1a4f5529b4d41').save('models/all-MiniLM-L6-v2-1110a243')"
 shasum -a 256 models/all-MiniLM-L6-v2-1110a243/model.safetensors
 ```
 
@@ -217,12 +220,19 @@ TECHJAM_ENABLE_EMBEDDINGS=1 \
 TECHJAM_EMBEDDING_MODEL="$PWD/models/all-MiniLM-L6-v2-1110a243" \
 TECHJAM_EMBEDDING_CACHE="$PWD/data/.embedding_cache" \
 TECHJAM_SEMANTIC_SCORE_SCALE=0.75 \
-python3 -m evaluator.local_evaluator --output results-hybrid.json
+python -m evaluator.local_evaluator --output results-hybrid.json
 ```
 
 The first semantic startup builds the catalog-vector cache. Later runs reuse
 it. The model loader uses `local_files_only=True`, so an offline evaluation
 machine must be provisioned in advance.
+
+Expected metrics on the released 200-session public set:
+
+- TechnicalScore: `0.923318`
+- Hit Rate@10: `1.000000`
+- MRR: `0.862060`
+- MTTC: `2.765`
 
 ### Environment variables
 
