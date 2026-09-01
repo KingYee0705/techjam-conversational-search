@@ -271,8 +271,6 @@ order determines the score.
 | `evaluator/local_evaluator.py` | Official-style public simulator and scorer |
 | `tests/` | 151 deterministic unit and integration tests |
 | `SUBMISSION_REPORT.md` | Technical method, experiments, feasibility, and limitations |
-| `docs/DEMO_VIDEO_WALKTHROUGH.md` | Timed judge-facing repository and demo narration |
-| `docs/DEVPOST_WRITEUP.md` | Copy-ready Devpost submission draft |
 
 For a code walkthrough, follow one request instead of reading files in
 alphabetical order:
@@ -346,4 +344,3 @@ The catalog and sessions are derived from Amazon Reviews 2023 by McAuley Lab,
 UCSD. See [DATA_ATTRIBUTION.md](DATA_ATTRIBUTION.md) before using or
 redistributing the data. Raw user IDs, review text, timestamps, and purchase
 history are not exposed to the agent.
-
