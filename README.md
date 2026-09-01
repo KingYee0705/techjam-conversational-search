@@ -1,4 +1,4 @@
-# Conversational Product Search
+# IntentCart — Conversational Product Search
 
 > A local, hybrid product-search agent that turns a multi-turn conversation
 > into ranked recommendations from a frozen catalog of 50,000 Amazon products.
