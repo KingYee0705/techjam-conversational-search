@@ -212,15 +212,13 @@ They should be remeasured in the final clean submission environment.
 
 ## Team contributions
 
-- Person 1 — catalog loading, multi-route retrieval, FTS indexing, and semantic
-  candidate-route prototyping.
-- Person 2 — standalone deterministic ranking and constraint-aware scoring.
-- Person 3 — dialogue state, clarification behavior, and intent overrides.
-- Person 4 — Agent API orchestration, caching, and module integration.
-- Person 5 — evaluation, reproducibility, Git workflow, and submission report.
-
-The team should replace the role labels with participant names in the final
-submission form if the organizer requires named attribution.
+- **icebear0511:** catalog loading, FTS5 indexing, multi-route retrieval, and
+  semantic candidate prototyping.
+- **KingYee0705:** deterministic ranking and constraint-aware scoring.
+- **yj0-0:** dialog state, clarification behavior, and intent overrides.
+- **Alexis-alt-debug:** Agent API orchestration, caching, and module integration.
+- **legoleekokpeng:** evaluation, reproducibility, Git workflow, and submission
+  documentation.
 
 ## Demonstration
 

@@ -327,12 +327,12 @@ measured.
 
 ## Team contributions
 
-- **Person 1:** catalog loading, FTS5 indexing, multi-route retrieval, and
+- **icebear0511:** catalog loading, FTS5 indexing, multi-route retrieval, and
   semantic candidate prototyping.
-- **Person 2:** deterministic ranking and constraint-aware scoring.
-- **Person 3:** dialog state, clarification behavior, and intent overrides.
-- **Person 4:** Agent API orchestration, caching, and module integration.
-- **Person 5:** evaluation, reproducibility, Git workflow, and submission
+- **KingYee0705:** deterministic ranking and constraint-aware scoring.
+- **yj0-0:** dialog state, clarification behavior, and intent overrides.
+- **Alexis-alt-debug:** Agent API orchestration, caching, and module integration.
+- **legoleekokpeng:** evaluation, reproducibility, Git workflow, and submission
   documentation.
 
 ## Data attribution
@@ -341,4 +341,3 @@ The catalog and sessions are derived from Amazon Reviews 2023 by McAuley Lab,
 UCSD. See [DATA_ATTRIBUTION.md](DATA_ATTRIBUTION.md) before using or
 redistributing the data. Raw user IDs, review text, timestamps, and purchase
 history are not exposed to the agent.
-
