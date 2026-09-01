@@ -335,12 +335,10 @@ measured.
 - **Person 5:** evaluation, reproducibility, Git workflow, and submission
   documentation.
 
-Replace the role labels with participant names before the final Devpost
-submission if named attribution is required.
-
 ## Data attribution
 
 The catalog and sessions are derived from Amazon Reviews 2023 by McAuley Lab,
 UCSD. See [DATA_ATTRIBUTION.md](DATA_ATTRIBUTION.md) before using or
 redistributing the data. Raw user IDs, review text, timestamps, and purchase
 history are not exposed to the agent.
+
